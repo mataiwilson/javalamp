@@ -11,7 +11,6 @@ lightweight /proc reads, 60s for the ZFS subprocess).
 from __future__ import annotations
 
 import socket
-import struct
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -35,7 +34,7 @@ class SystemStats:
     """Snapshot of system metrics."""
 
     uptime_seconds: Optional[float] = None
-    cpu_load_1m: Optional[float] = None
+    cpu_percent: Optional[float] = None
     cpu_temp_c: Optional[float] = None
     ram_percent: Optional[float] = None
     gpu_temp_c: Optional[int] = None
@@ -67,6 +66,8 @@ class SysInfoCollector:
         self._cache: dict[str, _CacheEntry] = {}
         self._nvml_initialized = False
         self._nvml_handle = None
+        # Previous /proc/stat snapshot for CPU % delta calculation.
+        self._prev_cpu_times: Optional[tuple[int, int]] = None  # (idle, total)
 
     def _is_stale(self, key: str, max_age: float) -> bool:
         entry = self._cache.get(key)
@@ -93,10 +94,31 @@ class SysInfoCollector:
         except (OSError, ValueError, IndexError):
             return None
 
-    def _read_cpu_load(self) -> Optional[float]:
+    def _read_cpu_percent(self) -> Optional[float]:
+        """Calculate CPU usage % from /proc/stat delta between samples."""
         try:
-            text = Path("/proc/loadavg").read_text()
-            return float(text.split()[0])
+            text = Path("/proc/stat").read_text()
+            # First line: cpu <user> <nice> <system> <idle> <iowait> ...
+            first_line = text.split("\n", 1)[0]
+            parts = first_line.split()
+            if parts[0] != "cpu":
+                return None
+            times = [int(x) for x in parts[1:]]
+            idle = times[3] + (times[4] if len(times) > 4 else 0)  # idle + iowait
+            total = sum(times)
+
+            if self._prev_cpu_times is None:
+                self._prev_cpu_times = (idle, total)
+                return None
+
+            prev_idle, prev_total = self._prev_cpu_times
+            self._prev_cpu_times = (idle, total)
+
+            d_idle = idle - prev_idle
+            d_total = total - prev_total
+            if d_total == 0:
+                return 0.0
+            return ((d_total - d_idle) / d_total) * 100.0
         except (OSError, ValueError, IndexError):
             return None
 
@@ -269,7 +291,7 @@ class SysInfoCollector:
         # Fast stats (every 2s) — /proc and /sys file reads.
         if self._is_stale("fast", self._fast_interval):
             self._store("uptime", self._read_uptime())
-            self._store("cpu_load", self._read_cpu_load())
+            self._store("cpu_percent", self._read_cpu_percent())
             self._store("cpu_temp", self._read_cpu_temp())
             self._store("ram", self._read_ram())
             gpu_temp, gpu_load = self._read_gpu()
@@ -291,7 +313,7 @@ class SysInfoCollector:
             self._store("zfs_cap", self._read_zfs_capacity())
 
         stats.uptime_seconds = self._get("uptime")
-        stats.cpu_load_1m = self._get("cpu_load")
+        stats.cpu_percent = self._get("cpu_percent")
         stats.cpu_temp_c = self._get("cpu_temp")
         stats.ram_percent = self._get("ram")
         stats.gpu_temp_c = self._get("gpu_temp")
@@ -319,8 +341,8 @@ class SysInfoCollector:
 
         # CPU.
         cpu_parts: list[str] = []
-        if stats.cpu_load_1m is not None:
-            cpu_parts.append(f"{stats.cpu_load_1m:.1f}")
+        if stats.cpu_percent is not None:
+            cpu_parts.append(f"{stats.cpu_percent:.0f}%")
         if stats.cpu_temp_c is not None:
             cpu_parts.append(f"{stats.cpu_temp_c:.0f}°C")
         if cpu_parts:
