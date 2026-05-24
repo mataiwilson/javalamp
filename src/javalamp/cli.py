@@ -225,6 +225,8 @@ class _FriendlyCommand(click.Command):
 @click.option("--cycle", "cycle_mode", is_flag=True, default=False,
               help="Skip the picker and cycle through every scene "
                    "(the original v0 behavior).")
+@click.option("--sysinfo", is_flag=True, default=False,
+              help="Show live system stats (CPU, GPU, RAM, Docker, ZFS) in the footer.")
 @click.version_option(package_name="javalamp", prog_name="javalamp")
 def main(
     scene: str | None,
@@ -239,6 +241,7 @@ def main(
     no_caffeinate: bool,
     no_splash: bool,
     cycle_mode: bool,
+    sysinfo: bool,
 ) -> None:
     """javalamp — animated ASCII screensaver.
 
@@ -313,6 +316,7 @@ def main(
         seed=seed,
         caffeinate=not no_caffeinate,
         show_picker=show_picker,
+        sysinfo=sysinfo,
     )
     sys.exit(runner.run())
 
